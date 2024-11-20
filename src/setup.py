@@ -1,102 +1,176 @@
-"""
-# Retards Creative Server Updates
+import os, platform, subprocess, requests, traceback
 
-## Server
+from pathlib import Path
 
-```bash
-cd $MODSOURCE
-git add -A
-git commit -m $COMMITMSG
-git push
-java -jar $FASTPACK --baseURL $REMOTE --path . --mc $MCVER --out $XML
-# Upload XML to release
+class UnsupportedSystem(Exception): ...
 
-cd /home/malasaur/Desktop/RetardsCreative
-git add -A
-git commit -m $COMMITMSG
-git push
-java -jar /usr/bin/fastpack.jar 
-    --baseURL https://github.com/Malasaur/RetardsCreativeMods/raw/refs/heads/master 
-    --path . --mc 1.20.1 --out /home/malasaur/Desktop/serverPack.xml
-# Create release with XML
-```
+def runCmd(*cmd):
+    """
+    Runs a shell command and returns True if successful, False otherwise.
+    """
 
-## Client
-
-```bash
-java -jar $MCUCLI --pack $REMOTEXML --path $MINECRAFT --server $SERVER
-
-java -jar /usr/bin/mcupdater.jar 
-    --pack https://github.com/Malasaur/RetardsCreativeMods/releases/latest/download/serverMods.xml
-    --path $MINECRAFT 
-    --server "Retards Creative"
-```
-"""
-
-"""
-mcUpdater = "/usr/bin/mcupdater.jar"
-repo = "https://github.com/Malasaur/RetardsCreativeMods"
-xml = "serverMods.xml"
-mcPath = "/home/malasaur/.local/share/PrismLauncher/instances/Forge 1.20.1/minecraft"
-server = "Retards Creative"
-
-remoteXml = repo+"/releases/latest/download/"+xml
-
-def updateMods():
-    ...
-"""
-
-from subprocess import run, PIPE, CalledProcessError
-from platform import system
-
-def javaInstalled():
     try:
-        subprocess.run(["java", "-version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return True
-    except CalledProcessError: return False
-
-def installJava():
-    system = system().lower()
-
-    match system:
-        case "linux":
-            print("Installing Java...")
-        case "windows":
-            print("Installing Java...")
-        case _:
-            print("ERROR: OS not supported")
-
-
-"""
-https://github.com/AdoptOpenJDK/openjdk16-binaries/releases/latest/download/OpenJDK16U-jdk_x64_windows_openj9_16.0.1_9_openj9-0.26.0.msi
-import os
-import platform
-
-def install_java():
-    system = platform.system().lower()
-    
-    if system == 'linux':
-        # Try using yay or apt (you could extend this for other package managers like pacman, dnf)
-        print("Java not found. Attempting to install...")
-        if os.system("yay -S jdk11-openjdk") != 0:  # Change the package name as per your requirements
-            print("Java installation failed. Try installing it manually.")
-    elif system == 'darwin':  # macOS
-        print("Java not found. Attempting to install with brew...")
-        if os.system("brew install openjdk@11") != 0:
-            print("Java installation failed. Try installing it manually.")
-    elif system == 'windows':
-        print("Java not found. Please install Java from the official website: https://adoptopenjdk.net/ or Oracle's JDK.")
-    else:
-        print("Unsupported OS detected. Please install Java manually.")
-
-import subprocess
-import sys
-
-def check_java_installed():
-    try:
-        # Check for Java version
-        subprocess.run(["java", "-version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return True
     except subprocess.CalledProcessError:
         return False
-"""
+
+def installJava_Linux():
+    """
+    Installs Java on Linux using the system's package manager.
+    """
+
+    if runCmd("pacman", "--version"):
+        print("Arch-based distro detected. Installing Java with pacman...")
+        subprocess.run(["sudo", "pacman", "-S", "jdk-openjdk", "--noconfirm"])
+    elif runCmd("apt", "--version"):
+        print("Debian-based distro detected. Installing Java with apt...")
+        subprocess.run(["sudo", "apt", "install", "default-jdk", "-y"])
+    else:
+        raise UnsupportedSystem("Unsupported Linux distribution. Install Java manually.")
+
+def installJava_Windows():
+    """
+    Downloads and installs Java on Windows.
+    """
+
+    print("Downloading and installing Java for Windows...")
+
+    url = "https://github.com/AdoptOpenJDK/openjdk16-binaries/releases/latest/download/OpenJDK16U-jdk_x64_windows_openj9_16.0.1_9_openj9-0.26.0.msi"
+    installer_path = Path(os.environ["USERPROFILE"], "Downloads", "OpenJDKInstaller.msi")
+
+    response = requests.get(url, stream=True)
+
+    if response.status_code == 200:
+        with open(installer_path, "wb") as file:
+            for chunk in response.iter_content(1024):
+                file.write(chunk)
+        print("Running Java installer. Follow the installation steps.")
+        subprocess.run(["msiexec", "/i", str(installer_path)])
+    else:
+        raise ConnectionError("Failed to download Java installer.")
+
+
+def installJava():
+    """
+    Ensures Java is installed. Installs it if not present.
+    """
+
+    if runCmd("java", "-version"):
+        print("Java is already installed.")
+        return
+
+    os_name = platform.system().lower()
+    if os_name == "linux":
+        installJava_Linux()
+    elif os_name == "windows":
+        installJava_Windows()
+    else:
+        raise UnsupportedSystem(f"{os_name.capitalize()} is not supported.")
+
+    if not runCmd("java", "-version"):
+        raise RuntimeError("Java installation failed. Please install it manually.")
+
+def downloadMcu():
+    """
+    Downloads the MCUpdater JAR file and saves it to a shared bin directory.
+    """
+    
+    print("Downloading MCUpdater CLI...")
+
+    url = "https://files.mcupdater.com/MCU-CLI-latest.jar"
+    bin_dir = Path.home() / (".local/bin" if platform.system().lower() == "linux" else "bin")
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    jar_path = bin_dir / "mcupdater.jar"
+
+    response = requests.get(url, stream=True)
+    if response.status_code == 200:
+        total_size = int(response.headers.get('Content-Length', 0))
+        chunk_size = 1024
+
+        with open(jar_path, "wb") as file:
+            downloaded_size = 0
+            for chunk in response.iter_content(chunk_size):
+                if chunk:
+                    file.write(chunk)
+                    downloaded_size += len(chunk)
+
+                    progress = (downloaded_size / total_size) * 100 if total_size else 0
+                    print(f"\rDownloading: {progress:.2f}% ({downloaded_size}/{total_size} bytes)", end="")
+        print()
+
+        print(f"MCUpdater downloaded to {jar_path}.")
+        return jar_path
+    else:
+        raise ConnectionError("Failed to download MCUpdater CLI.")
+
+
+def findMC():
+    """
+    Locates the Minecraft installation folder.
+    """
+
+    os_name = platform.system().lower()
+    paths = [
+        Path.home() / ".minecraft",
+        Path.home() / ".local/share/PrismLauncher/instances/Forge 1.20.1/minecraft",
+    ] if os_name == "linux" else [
+        Path(os.environ.get("APPDATA", ""), ".minecraft"),
+    ]
+
+    for path in paths:
+        if path.is_dir():
+            print(f"Minecraft folder found at {path}.")
+            return path
+
+    path = ""
+    while not path or not os.path.isdir(path):
+        print("Minecraft folder not found.")
+        path = input("Please manually enter your Minecraft path: ")
+    
+    return path
+
+def createRCU(jar_path, mc_folder):
+    """
+    Creates the `rcu` or `rcu.bat` command for launching MCUpdater.
+    """
+    
+    os_name = platform.system().lower()
+    bin_dir = Path("/usr/local/bin") if os_name == "linux" else Path(os.environ["USERPROFILE"], "AppData/Local/Microsoft/WindowsApps")
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    rcu_path = bin_dir / ("rcu" if os_name == "linux" else "rcu.bat")
+
+    command = (
+        f"java -jar \"{jar_path}\" --pack https://github.com/Malasaur/RetardsCreative/releases/latest/download/serverPack.xml "
+        f"--path \"{mc_folder}\" --server \"Retards Creative\""
+    )
+    if os_name == "linux":
+        command = f"#!/bin/bash\n{command}"
+
+    with open(rcu_path, "w") as file:
+        file.write(command)
+
+    if os_name == "linux":
+        subprocess.run(["sudo", "chmod", "+x", str(rcu_path)])
+
+    print(f"RCU command created at {rcu_path}. Add it to your PATH if needed.")
+
+
+def main():
+    """
+    Main setup function.
+    """
+    installJava()
+    jar_path = downloadMcu()
+    mc_folder = findMC()
+    createRCU(jar_path, mc_folder)
+
+if __name__ == "__main__":
+
+    try:
+        main()
+    except:
+        print(traceback.format_exc())
+        print("Please copy the above error and send it to the developer before closing the program.")
+    
+    input("Press Enter to exit")
